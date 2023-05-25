@@ -33,13 +33,10 @@ func (b *Broker) Send(msg Msg) error {
 		return TopicErr
 	}
 	for _, queue := range queueLink {
-		for {
-			select {
-			case queue <- msg:
-				break
-			default:
-				return QueueFullErr
-			}
+		select {
+		case queue <- msg.Content:
+		default:
+			return QueueFullErr
 		}
 	}
 
