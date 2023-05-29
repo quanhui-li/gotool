@@ -11,11 +11,11 @@ func TestBroker_Send(t *testing.T) {
 	broker := NewBroker()
 	topicList := []string{"first_topic", "second_topic"}
 
-	// 往不同的topic中各发送100条消息
+	// 往不同的topic中各发送2000条消息
 	for _, topic := range topicList {
 		tp := topic
 		go func() {
-			for i := 0; i < 100; i++ {
+			for i := 0; i < 2000; i++ {
 				if err := broker.Send(Msg{
 					Content: time.Now().String(),
 					Topic:   tp,
@@ -24,7 +24,7 @@ func TestBroker_Send(t *testing.T) {
 					return
 				}
 
-				time.Sleep(500 * time.Millisecond)
+				time.Sleep(100 * time.Millisecond)
 			}
 		}()
 	}
@@ -36,7 +36,7 @@ func TestBroker_Send(t *testing.T) {
 		brokerName := fmt.Sprintf("first topic broker %d", i)
 		go func() {
 			defer wg.Done()
-			msgs, err := broker.Subscribe("first_topic", 1000)
+			msgs, err := broker.Subscribe("first_topic", 100)
 			if err != nil {
 				t.Log(err)
 				return
@@ -62,7 +62,7 @@ func TestBroker_Send(t *testing.T) {
 		brokerName := fmt.Sprintf("second topic broker %d", i)
 		go func() {
 			defer wg.Done()
-			msgs, err := broker.Subscribe("second_topic", 1000)
+			msgs, err := broker.Subscribe("second_topic", 100)
 			if err != nil {
 				t.Log(err)
 				return
