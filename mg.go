@@ -3,28 +3,44 @@ package channel
 import (
 	"errors"
 	"sync"
+	"time"
+)
+
+const (
+	MaxSize         = 1024 * 1024 * 1024
+	DefaultCapacity = 1000
 )
 
 var (
 	TopicErr     = errors.New("topic not existed")
 	QueueFullErr = errors.New("queue full")
+	MaxSizeErr   = errors.New("exceeded max size")
 )
 
 type Broker struct {
 	// 加锁保证map安全
 	sync.RWMutex
 	// 队列链，key是topic，value是队列
-	queueLinks map[string][]chan interface{}
+	queueLinks map[string][]chan []byte
+	// 发送超时时长限制
+	timeout time.Duration
+	// 单条消息最大长度限制
+	maxSize int
 }
 
-func NewBroker() *Broker {
+func NewBroker(timeout time.Duration) *Broker {
 	return &Broker{
-		queueLinks: make(map[string][]chan interface{}),
+		queueLinks: make(map[string][]chan []byte),
+		timeout:    timeout,
+		maxSize:    MaxSize,
 	}
 }
 
 // Send 发送消息到topic下的队列中
 func (b *Broker) Send(msg Msg) error {
+	if len(msg.Content) > b.maxSize {
+		return MaxSizeErr
+	}
 	b.RLock()
 	defer b.RUnlock()
 	queueLink, ok := b.queueLinks[msg.Topic]
@@ -35,7 +51,7 @@ func (b *Broker) Send(msg Msg) error {
 	for _, queue := range queueLink {
 		select {
 		case queue <- msg.Content:
-		default:
+		case <-time.After(b.timeout):
 			return QueueFullErr
 		}
 	}
@@ -43,18 +59,19 @@ func (b *Broker) Send(msg Msg) error {
 	return nil
 }
 
-func (b *Broker) Subscribe(topic string, capacity int) (<-chan interface{}, error) {
+// Subscribe 订阅主题和队列
+func (b *Broker) Subscribe(topic string, capacity int) (<-chan []byte, error) {
 	b.Lock()
 	defer b.Unlock()
 
 	if capacity <= 0 {
-		capacity = 1000
+		capacity = DefaultCapacity
 	}
 
-	newQueue := make(chan interface{}, capacity)
+	newQueue := make(chan []byte, capacity)
 	_, ok := b.queueLinks[topic]
 	if !ok {
-		b.queueLinks[topic] = []chan interface{}{newQueue}
+		b.queueLinks[topic] = []chan []byte{newQueue}
 	} else {
 		b.queueLinks[topic] = append(b.queueLinks[topic], newQueue)
 	}
@@ -80,7 +97,7 @@ func (b *Broker) Close(topic string) error {
 
 type Msg struct {
 	// 发送消息的内容
-	Content interface{}
+	Content []byte
 	// 订阅的队列主题
 	Topic string
 }

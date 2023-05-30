@@ -8,7 +8,7 @@ import (
 )
 
 func TestBroker_Send(t *testing.T) {
-	broker := NewBroker()
+	broker := NewBroker(100 * time.Millisecond)
 	topicList := []string{"first_topic", "second_topic"}
 
 	// 往不同的topic中各发送2000条消息
@@ -18,16 +18,16 @@ func TestBroker_Send(t *testing.T) {
 			defer func() {
 				_ = broker.Close(tp)
 			}()
-			for i := 0; i < 200; i++ {
+			for i := 0; i < 2000; i++ {
 				if err := broker.Send(Msg{
-					Content: time.Now().String(),
+					Content: []byte(time.Now().String()),
 					Topic:   tp,
 				}); err != nil {
 					t.Log(err)
 					return
 				}
 
-				time.Sleep(10 * time.Millisecond)
+				//time.Sleep(10 * time.Millisecond)
 			}
 		}()
 	}
@@ -51,8 +51,7 @@ func TestBroker_Send(t *testing.T) {
 					if !ok {
 						return
 					}
-					data, _ := msg.(string)
-					fmt.Printf("%s 消费到消息%s\n", brokerName, data)
+					fmt.Printf("%s 消费到消息%s\n", brokerName, string(msg))
 				case <-time.After(time.Second):
 					//t.Log("超时")
 					return
@@ -77,8 +76,7 @@ func TestBroker_Send(t *testing.T) {
 					if !ok {
 						return
 					}
-					data, _ := msg.(string)
-					fmt.Printf("%s 消费到消息%s\n", brokerName, data)
+					fmt.Printf("%s 消费到消息%s\n", brokerName, string(msg))
 				case <-time.After(time.Second):
 					//t.Log("超时")
 					return
