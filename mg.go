@@ -38,7 +38,6 @@ func (b *Broker) Send(msg Msg) error {
 		default:
 			return QueueFullErr
 		}
-
 	}
 
 	return nil
@@ -49,7 +48,7 @@ func (b *Broker) Subscribe(topic string, capacity int) (<-chan interface{}, erro
 	defer b.Unlock()
 
 	if capacity <= 0 {
-		capacity = 2000
+		capacity = 1000
 	}
 
 	newQueue := make(chan interface{}, capacity)
@@ -61,6 +60,22 @@ func (b *Broker) Subscribe(topic string, capacity int) (<-chan interface{}, erro
 	}
 
 	return newQueue, nil
+}
+
+// Close 关闭订阅的topic下的所有队列
+func (b *Broker) Close(topic string) error {
+	b.Lock()
+	queue := b.queueLinks[topic]
+	b.queueLinks[topic] = nil
+	b.Unlock()
+
+	// TODO 解决不传递topic直接关闭对应topic下的队列问题
+	// 避免重复关闭的问题
+	for _, queue := range queue {
+		close(queue)
+	}
+
+	return nil
 }
 
 type Msg struct {

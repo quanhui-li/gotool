@@ -15,7 +15,10 @@ func TestBroker_Send(t *testing.T) {
 	for _, topic := range topicList {
 		tp := topic
 		go func() {
-			for i := 0; i < 2000; i++ {
+			defer func() {
+				_ = broker.Close(tp)
+			}()
+			for i := 0; i < 200; i++ {
 				if err := broker.Send(Msg{
 					Content: time.Now().String(),
 					Topic:   tp,
@@ -24,7 +27,7 @@ func TestBroker_Send(t *testing.T) {
 					return
 				}
 
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(10 * time.Millisecond)
 			}
 		}()
 	}
