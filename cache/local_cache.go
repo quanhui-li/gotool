@@ -26,6 +26,15 @@ type MapCacheInter interface {
 	Close() error
 }
 
+type Options func(*BuildInMapCache)
+
+// BuildInMapCacheWithOnEvicted 选项模式传入回调
+func BuildInMapCacheWithOnEvicted(fn func(string, any)) Options {
+	return func(cache *BuildInMapCache) {
+		cache.onEvicted = fn
+	}
+}
+
 type BuildInMapCache struct {
 	// map缓存数据
 	data map[string]*Value
@@ -35,13 +44,20 @@ type BuildInMapCache struct {
 	close chan struct{}
 	// 控制只关闭一次
 	sync.Once
+	// onEvicted 回调通知方法
+	onEvicted func(key string, val any)
 }
 
-func NewBuildInMapCache(interval time.Duration) *BuildInMapCache {
+func NewBuildInMapCache(interval time.Duration, opts ...Options) *BuildInMapCache {
 	res := &BuildInMapCache{
-		data:  make(map[string]*Value),
-		mutex: sync.RWMutex{},
-		close: make(chan struct{}),
+		data:      make(map[string]*Value),
+		mutex:     sync.RWMutex{},
+		close:     make(chan struct{}),
+		onEvicted: func(key string, val any) {},
+	}
+
+	for _, opt := range opts {
+		opt(res)
 	}
 
 	// 开启goroutine定期循环删除过期的key，map遍历是随机的，不是顺序遍历，不存在每次轮训的key一样的情况，更优雅
@@ -57,7 +73,7 @@ func NewBuildInMapCache(interval time.Duration) *BuildInMapCache {
 						break
 					}
 					if val.deadlineBefore(t) {
-						delete(res.data, key)
+						res.delete(key)
 					}
 
 					counter++
@@ -117,7 +133,7 @@ func (b *BuildInMapCache) Get(ctx context.Context, key string) (value any, err e
 			return nil, NotExisted
 		}
 		if !val.deadlineBefore(now) {
-			delete(b.data, key)
+			b.delete(key)
 		}
 	}
 
@@ -127,9 +143,20 @@ func (b *BuildInMapCache) Get(ctx context.Context, key string) (value any, err e
 func (b *BuildInMapCache) Delete(ctx context.Context, key string) error {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
-	delete(b.data, key)
+	b.delete(key)
 
 	return nil
+}
+
+// delete 删除指定的key，并回调key和value
+func (b *BuildInMapCache) delete(key string) {
+	val, ok := b.data[key]
+	if !ok {
+		b.onEvicted(key, nil)
+		return
+	}
+	delete(b.data, key)
+	b.onEvicted(key, val.value)
 }
 
 func (b *BuildInMapCache) Close() error {
