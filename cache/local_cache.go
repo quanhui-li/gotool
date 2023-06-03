@@ -1,84 +1,69 @@
 package cache
 
 import (
-	"context"
 	"errors"
 	"sync"
 	"time"
 )
 
 const (
-	MaxDeleteNum = 1000
+	maxDeleteCount = 1000
 )
 
 var (
-	NotExisted = errors.New("key not existed")
+	ErrKeyNotExisted = errors.New("cache: key不存在")
 )
 
-type MapCacheInter interface {
-	// Set 设置缓存数据
-	Set(ctx context.Context, key string, value any, expiration time.Duration) error
-	// Get 查询单条数据
-	Get(ctx context.Context, key string) (value any, err error)
-	// Delete 删除指定key的数据
-	Delete(ctx context.Context, key string) error
-	// Close 关闭缓存
-	Close() error
-}
+type Options func(cache *BuildInCache)
 
-type Options func(*BuildInMapCache)
-
-// BuildInMapCacheWithOnEvicted 选项模式传入回调
-func BuildInMapCacheWithOnEvicted(fn func(string, any)) Options {
-	return func(cache *BuildInMapCache) {
+func BuildInCacheWithOnEvicted(fn func(string, any)) Options {
+	return func(cache *BuildInCache) {
 		cache.onEvicted = fn
 	}
 }
 
-type BuildInMapCache struct {
-	// map缓存数据
+type BuildInCache struct {
+	// data map结构缓存数据
 	data map[string]*Value
-	// Cache读多写少，用读写锁
-	mutex sync.RWMutex
-	// Close 接收关闭信号
+	// 读写锁控制并发
+	sync.RWMutex
+	// 关闭goroutine
 	close chan struct{}
-	// 控制只关闭一次
+	// 防止重复关闭
 	sync.Once
-	// onEvicted 回调通知方法
-	onEvicted func(key string, val any)
+	// 注册回调方法处理上下文，可选
+	onEvicted func(key string, value any)
 }
 
-func NewBuildInMapCache(interval time.Duration, opts ...Options) *BuildInMapCache {
-	res := &BuildInMapCache{
-		data:      make(map[string]*Value),
-		mutex:     sync.RWMutex{},
+func NewBuildInCache(capacity int, opts ...Options) *BuildInCache {
+	res := &BuildInCache{
+		data:      make(map[string]*Value, capacity),
 		close:     make(chan struct{}),
-		onEvicted: func(key string, val any) {},
+		onEvicted: func(key string, value any) {},
 	}
 
 	for _, opt := range opts {
 		opt(res)
 	}
 
-	// 开启goroutine定期循环删除过期的key，map遍历是随机的，不是顺序遍历，不存在每次轮训的key一样的情况，更优雅
+	// 开启goroutine定时轮询一部分key，map的轮询是随机的，不需要考虑每次轮询都是固定数据的问题
 	go func() {
-		ticker := time.NewTicker(interval)
+		ticker := time.NewTicker(10 * time.Second)
 		for {
 			select {
 			case t := <-ticker.C:
-				counter := 0
-				res.mutex.Lock()
+				res.Lock()
+				count := 0
 				for key, val := range res.data {
-					if counter > MaxDeleteNum {
+					if count >= maxDeleteCount {
 						break
 					}
 					if val.deadlineBefore(t) {
 						res.delete(key)
 					}
-
-					counter++
+					count++
 				}
-				res.mutex.Unlock()
+				res.Unlock()
 			case <-res.close:
 				return
 			}
@@ -88,22 +73,23 @@ func NewBuildInMapCache(interval time.Duration, opts ...Options) *BuildInMapCach
 	return res
 }
 
-// Set 设置key、value和过期时间，到了过期时间直接清除数据，如果不传过期时间则永不过期
-func (b *BuildInMapCache) Set(ctx context.Context, key string, value any, expiration time.Duration) error {
-	b.mutex.Lock()
-	defer b.mutex.Unlock()
+// Set 设置key、value和过期时间
+func (b *BuildInCache) Set(key string, value any, expiration time.Duration) error {
+	b.Lock()
+	defer b.Unlock()
 	b.data[key] = &Value{
 		value:    value,
 		deadline: time.Now().Add(expiration),
 	}
 
-	//// 通过time.After的方式清理过期的数据，但是新建的key都会有阻塞的goroutine去清理，大量的goroutine被浪费了，不够优雅
+	//// 通过time.AfterFunc设置过期
 	//if expiration > 0 {
 	//	time.AfterFunc(expiration, func() {
-	//		b.mutex.Lock()
-	//		defer b.mutex.Unlock()
+	//		b.Lock()
+	//		defer b.Unlock()
 	//		val, ok := b.data[key]
-	//		if ok && !val.deadline.IsZero() && val.deadline.Before(time.Now()) {
+	//		now := time.Now()
+	//		if ok && !val.deadline.IsZero() && val.deadline.Before(now) {
 	//			delete(b.data, key)
 	//		}
 	//	})
@@ -112,27 +98,25 @@ func (b *BuildInMapCache) Set(ctx context.Context, key string, value any, expira
 	return nil
 }
 
-// Get 根据key查询出对应的数据，key设置有过期时间，goroutine有轮询时间，所以在下一次轮询前过期的key，查询的时候
-// 会查询到，需要在Get方法中过过期处理
-func (b *BuildInMapCache) Get(ctx context.Context, key string) (value any, err error) {
-	b.mutex.RLock()
+// Get 根据key查询缓存的内容
+func (b *BuildInCache) Get(key string) (any, error) {
+	b.RLock()
 	val, ok := b.data[key]
-	b.mutex.RUnlock()
+	b.RUnlock()
 	if !ok {
-		return nil, NotExisted
+		return nil, ErrKeyNotExisted
 	}
 
-	// 考虑并发的情况，当一个goroutine Get拿到锁获取到key、val后，key是过期的，需要删除，另一个goroutine
-	// 此时并发写了这个key，就不应该再删除了，而是应该返回新的val，这里需要二次检查key的过期时间(double check)
 	now := time.Now()
-	if !val.deadlineBefore(now) {
-		b.mutex.Lock()
-		defer b.mutex.Unlock()
+	// 存在就需要判断是否过期，过期就删除，需要二次检验，防止并发修改问题，解决轮询漏掉过期key的问题
+	if val.deadlineBefore(now) {
+		b.Lock()
+		defer b.Unlock()
 		val, ok = b.data[key]
 		if !ok {
-			return nil, NotExisted
+			return nil, ErrKeyNotExisted
 		}
-		if !val.deadlineBefore(now) {
+		if val.deadlineBefore(now) {
 			b.delete(key)
 		}
 	}
@@ -140,16 +124,23 @@ func (b *BuildInMapCache) Get(ctx context.Context, key string) (value any, err e
 	return val.value, nil
 }
 
-func (b *BuildInMapCache) Delete(ctx context.Context, key string) error {
-	b.mutex.Lock()
-	defer b.mutex.Unlock()
-	b.delete(key)
-
+func (b *BuildInCache) Close() error {
+	b.Once.Do(func() {
+		b.close <- struct{}{}
+	})
 	return nil
 }
 
-// delete 删除指定的key，并回调key和value
-func (b *BuildInMapCache) delete(key string) {
+// Delete 删除key
+func (b *BuildInCache) Delete(key string) error {
+	b.Lock()
+	defer b.Unlock()
+	b.delete(key)
+	return nil
+}
+
+// delete 处理删除key和调用回调方法的程序
+func (b *BuildInCache) delete(key string) {
 	val, ok := b.data[key]
 	if !ok {
 		b.onEvicted(key, nil)
@@ -159,15 +150,10 @@ func (b *BuildInMapCache) delete(key string) {
 	b.onEvicted(key, val.value)
 }
 
-func (b *BuildInMapCache) Close() error {
-	b.Once.Do(func() {
-		b.close <- struct{}{}
-	})
-	return nil
-}
-
 type Value struct {
-	value    any
+	// value消息内容
+	value any
+	// 过期时间
 	deadline time.Time
 }
 
