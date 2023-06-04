@@ -77,10 +77,7 @@ func NewBuildInCache(capacity int, opts ...Options) *BuildInCache {
 func (b *BuildInCache) Set(key string, value any, expiration time.Duration) error {
 	b.Lock()
 	defer b.Unlock()
-	b.data[key] = &Value{
-		value:    value,
-		deadline: time.Now().Add(expiration),
-	}
+	return b.set(key, value, expiration)
 
 	//// 通过time.AfterFunc设置过期
 	//if expiration > 0 {
@@ -94,7 +91,17 @@ func (b *BuildInCache) Set(key string, value any, expiration time.Duration) erro
 	//		}
 	//	})
 	//}
+}
 
+func (b *BuildInCache) set(key string, value any, expiration time.Duration) error {
+	var dl time.Time
+	if expiration > 0 {
+		dl = time.Now().Add(expiration)
+	}
+	b.data[key] = &Value{
+		value:    value,
+		deadline: dl,
+	}
 	return nil
 }
 
