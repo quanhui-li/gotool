@@ -13,12 +13,12 @@ var (
 type LocalCache struct {
 	*BuildInCache
 	// maxCount 最多可以存储多少个key
-	maxCount uint32
+	maxCount int32
 	// curCount 当前已经存储key的数量
-	curCount uint32
+	curCount int32
 }
 
-func NewLocalCache(c *BuildInCache, mnt uint32) *LocalCache {
+func NewLocalCache(c *BuildInCache, mnt int32) *LocalCache {
 	lc := &LocalCache{
 		BuildInCache: c,
 		maxCount:     mnt,
@@ -28,7 +28,7 @@ func NewLocalCache(c *BuildInCache, mnt uint32) *LocalCache {
 	// 需要在传入的回调函数上包上一层
 	origin := c.onEvicted
 	lc.onEvicted = func(key string, value any) {
-		atomic.AddUint32(&lc.curCount, -1)
+		atomic.AddInt32(&lc.curCount, -1)
 		if c.onEvicted != nil {
 			origin(key, value)
 		}
@@ -65,10 +65,10 @@ func (l *LocalCache) Set(key string, value any, operation time.Duration) error {
 	defer l.Unlock()
 	_, ok := l.data[key]
 	if !ok {
-		atomic.AddUint32(&l.curCount, 1)
+		atomic.AddInt32(&l.curCount, 1)
 	}
-	if atomic.LoadUint32(&l.curCount) > l.maxCount {
-		atomic.AddUint32(&l.maxCount, -1)
+	if atomic.LoadInt32(&l.curCount) > l.maxCount {
+		atomic.AddInt32(&l.maxCount, -1)
 		return OverCapacityErr
 	}
 	return l.set(key, value, operation)
