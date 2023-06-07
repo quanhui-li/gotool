@@ -38,7 +38,7 @@ func (r *RedisCache) Get(ctx context.Context, key string) (any, error) {
 	return r.client.Get(ctx, key).Result()
 }
 
-func (r *RedisCache) Delete(ctx context.Context, key string) (int64, error) {
-	c, err := r.client.Del(ctx, key).Result()
-	return c, err
+func (r *RedisCache) Delete(ctx context.Context, key string) error {
+	_, err := r.client.Del(ctx, key).Result()
+	return err
 }

@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/go-playground/assert/v2"
 	"github.com/golang/mock/gomock"
@@ -132,12 +133,24 @@ func TestRedisCache_Delete(t *testing.T) {
 			key:  "key1",
 			mock: func(ctrl *gomock.Controller) redis.Cmdable {
 				cmd := mocks.NewMockCmdable(ctrl)
-				status := redis.NewStatusCmd(context.Background())
+				status := redis.NewIntCmd(context.Background())
 				status.SetErr(nil)
 				cmd.EXPECT().Del(context.Background(), "key1").Return(status)
 				return cmd
 			},
 			wantErr: nil,
+		},
+		{
+			name: "unexpected error",
+			key:  "key1",
+			mock: func(ctrl *gomock.Controller) redis.Cmdable {
+				cmd := mocks.NewMockCmdable(ctrl)
+				status := redis.NewIntCmd(context.Background())
+				status.SetErr(errors.New("unexpected error"))
+				cmd.EXPECT().Del(context.Background(), "key1").Return(status)
+				return cmd
+			},
+			wantErr: errors.New("unexpected error"),
 		},
 	}
 
@@ -146,9 +159,8 @@ func TestRedisCache_Delete(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 			c := NewRedisCache(tc.mock(ctrl))
-			cnt, err := c.Delete(context.Background(), tc.key)
+			err := c.Delete(context.Background(), tc.key)
 			assert.Equal(t, tc.wantErr, err)
-			fmt.Println(cnt)
 		})
 	}
 }
