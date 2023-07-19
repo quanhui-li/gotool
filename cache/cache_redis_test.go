@@ -96,7 +96,7 @@ func TestRedisCache_Get(t *testing.T) {
 			wantValue: "value1",
 		},
 		{
-			name: "get error",
+			name: "get errors",
 			key:  "key2",
 			mock: func(ctrl *gomock.Controller) redis.Cmdable {
 				cmd := mocks.NewMockCmdable(ctrl)
@@ -141,16 +141,16 @@ func TestRedisCache_Delete(t *testing.T) {
 			wantErr: nil,
 		},
 		{
-			name: "unexpected error",
+			name: "unexpected errors",
 			key:  "key1",
 			mock: func(ctrl *gomock.Controller) redis.Cmdable {
 				cmd := mocks.NewMockCmdable(ctrl)
 				status := redis.NewIntCmd(context.Background())
-				status.SetErr(errors.New("unexpected error"))
+				status.SetErr(errors.New("unexpected errors"))
 				cmd.EXPECT().Del(context.Background(), "key1").Return(status)
 				return cmd
 			},
-			wantErr: errors.New("unexpected error"),
+			wantErr: errors.New("unexpected errors"),
 		},
 	}
 
