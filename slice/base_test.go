@@ -55,3 +55,13 @@ func BenchmarkDeleteV1(b *testing.B) {
 		b.Log(arr, val)
 	}
 }
+
+func TestDeleteVal(t *testing.T) {
+	arr := []string{"a", "b", "c", "d", "a", "a", "e"}
+	arr, err := DeleteVal(arr, "a")
+	if err != nil {
+		t.Log(err.Error())
+	} else {
+		fmt.Println(arr)
+	}
+}

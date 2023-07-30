@@ -10,3 +10,8 @@ func Delete[T any](sli []T, index int) ([]T, error) {
 func DeleteWithVal[T any](sli []T, index int) ([]T, T, error) {
 	return delete(sli, index)
 }
+
+// DeleteSpecifyVal 删除切片中指定的值
+func DeleteSpecifyVal[T Comparable](sli []T, val T) ([]T, error) {
+	return DeleteVal(sli, val)
+}

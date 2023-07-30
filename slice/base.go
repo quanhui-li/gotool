@@ -9,6 +9,9 @@ import "github.com/liquanhui-99/gotool/errors"
 // @return error错误返回值
 func delete[T any](sli []T, index int) ([]T, T, error) {
 	var zero T
+	if len(sli) == 0 {
+		return nil, zero, errors.LenZeroErr()
+	}
 	if index > len(sli)-1 || index < 0 {
 		return nil, zero, errors.OutOfRangeErr(index, len(sli))
 	}
@@ -23,4 +26,20 @@ func delete[T any](sli []T, index int) ([]T, T, error) {
 	}
 	sli = sli[:i]
 	return sli, val, nil
+}
+
+// DeleteVal 删除切片中指定的值
+func DeleteVal[T Comparable](sli []T, val T) ([]T, error) {
+	if len(sli) <= 0 {
+		return nil, errors.LenZeroErr()
+	}
+	i := 0
+	for _, v := range sli {
+		if v != val {
+			sli[i] = v
+			i++
+		}
+	}
+	sli = sli[:i]
+	return sli, nil
 }
