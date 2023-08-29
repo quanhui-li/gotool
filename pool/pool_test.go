@@ -3,6 +3,7 @@ package pool
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -21,4 +22,28 @@ func TestPool(t *testing.T) {
 		}
 	}
 	time.Sleep(10 * time.Millisecond)
+}
+
+func TestSyncPool(t *testing.T) {
+	p := &sync.Pool{
+		New: func() any {
+			t.Log("创建资源了")
+			// 最好永远不要返回nil
+			return "hello"
+		},
+	}
+
+	res := p.Get()
+	val, _ := res.(string)
+	t.Log(val)
+	p.Put(val)
+
+	res = p.Get()
+	val, _ = res.(string)
+	t.Log(val)
+
+	res = p.Get()
+	val, _ = res.(string)
+	t.Log(val)
+
 }
