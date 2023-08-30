@@ -7,40 +7,70 @@ import (
 
 const (
 	DefaultCapacity = 1000 // 默认容量
-	MaxRetry        = 5    // 最大重试次数
 )
 
 type Broker struct {
 	// 用于存放所有订阅消息的broker，为了针对topic做精细化的管控，使用了map结构
-	// key是topic，val是切片，所有订阅了该消息的broker
+	// key是topic，val是map，存储了所有订阅了该消息的broker，内部map的key是队列的名称，
+	// val对应的是channel，订阅的队列
 	// 如果不关心topic，可以使用切片，每次消息过来发送到所有的broker上即可
-	brokerChain map[string][]chan Message
+	brokerChain map[string]map[string]chan Message
 	// 加锁保护
 	mu sync.RWMutex
-	// 重试策略，默认不重试，只发送一次，如果消息队列已满，该消息队列将跳过本次消息发送，
-	// 如果开启重启，最多会重试5次
-	Retry bool
+	// 返回发送错误消息的队列，每一个topic对应队列，这个队列是错误队列，用于返回发送失败的消息及错误的内容
+	// 容量是默认容量
+	topicErrQueue map[string]chan ErrMessage
+}
+
+func NewBroker() *Broker {
+	return &Broker{
+		brokerChain:   map[string]map[string]chan Message{},
+		topicErrQueue: map[string]chan ErrMessage{},
+	}
 }
 
 // Send 发送消息
 func (b *Broker) Send(msg Message) error {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	for _, ch := range b.brokerChain[msg.Topic] {
-		if b.Retry {
-			for i := 0; i < MaxRetry; i++ {
-				select {
-				case ch <- msg:
-					break
-				default:
-				}
+	chains, ok := b.brokerChain[msg.Topic]
+	if !ok {
+		return errors.New("topic不存在")
+	}
+	if msg.Queue != "" {
+		_, ok := chains[msg.Queue]
+		if !ok {
+			b.topicErrQueue[msg.Topic] <- ErrMessage{
+				Message: msg,
+				Err:     errors.New("消息队列不存在"),
 			}
-			return errors.New("消息队列已满")
-		} else {
-			select {
-			case ch <- msg:
-			default:
-				return errors.New("消息队列已满")
+		}
+	}
+
+	chain, ok := b.brokerChain[msg.Topic]
+	if !ok {
+		b.topicErrQueue[msg.Topic] <- ErrMessage{
+			Message: msg,
+			Err:     errors.New("消息队列不存在"),
+		}
+	}
+
+	errQueue, ok := b.topicErrQueue[msg.Topic]
+	if !ok {
+		return errors.New("错误消息队列不存在")
+	}
+
+	for queue, ch := range chain {
+		if msg.Queue != "" && queue != msg.Queue {
+			continue
+		}
+		select {
+		case ch <- msg:
+			return nil
+		default:
+			errQueue <- ErrMessage{
+				Message: msg,
+				Err:     errors.New("消息队列已满"),
 			}
 		}
 	}
@@ -48,12 +78,30 @@ func (b *Broker) Send(msg Message) error {
 	return nil
 }
 
+// ErrQueue 获取topic下的错误消息队列
+func (b *Broker) ErrQueue(topic string) (<-chan ErrMessage, bool) {
+	queue, ok := b.topicErrQueue[topic]
+	if !ok {
+		return nil, false
+	}
+	return queue, true
+}
+
+// Queue 获取topic下的消息队列
+func (b *Broker) Queue(topic, queue string) (<-chan Message, bool) {
+	qu, ok := b.brokerChain[topic][queue]
+	if !ok {
+		return nil, false
+	}
+	return qu, true
+}
+
 // Subscribe 订阅一个消息管道，用于接受消息
 // @param topic 是订阅消息的主题
 // @param capacity 接受消息的管道的容量，容量是可选的，如果传有容量，则使用用户传的，如果没有传则使用默认的
 // @return <-chan Message 一个只读的channel
 // @return error 错误
-func (b *Broker) Subscribe(topic string, capacity ...int) (<-chan Message, error) {
+func (b *Broker) Subscribe(topic, queueName string, capacity ...int) error {
 	var cap int
 	if len(capacity) == 0 {
 		cap = DefaultCapacity
@@ -61,37 +109,80 @@ func (b *Broker) Subscribe(topic string, capacity ...int) (<-chan Message, error
 		cap = capacity[0]
 	}
 	ch := make(chan Message, cap)
+	errCh := make(chan ErrMessage, DefaultCapacity)
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	chain, ok := b.brokerChain[topic]
 	if !ok {
-		b.brokerChain[topic] = []chan Message{ch}
+		b.brokerChain[topic] = map[string]chan Message{
+			queueName: ch,
+		}
+		b.topicErrQueue[topic] = errCh
 	} else {
-		chain = append(chain, ch)
+		_, ok := chain[queueName]
+		if ok {
+			return errors.New("队列已存在，请勿重复订阅")
+		}
+		chain[queueName] = ch
 	}
 
-	return ch, nil
+	return nil
 }
 
 // Close 关闭订阅消息的队列
 func (b *Broker) Close(topic string) {
 	b.mu.Lock()
+	defer b.mu.Unlock()
 	chain, ok := b.brokerChain[topic]
 	if !ok {
 		return
 	}
-	b.brokerChain[topic] = nil // 避免了重复关闭问题
-	b.mu.Unlock()
+	// 避免了重复关闭问题
+	b.brokerChain[topic] = nil
+	// 关闭错误消息的队列
+	close(b.topicErrQueue[topic])
 
 	for _, ch := range chain {
 		close(ch)
 	}
 }
 
+// ClosesQueue 关闭指定topic下的指定队列，先查询topic下是否存在该队列，存在则删除map，然后关闭channel
+// 再查询删除之后的topic下是否还有队列，如果没有就删除错误topic，关闭错误队列
+// @param topic 订阅的主题
+// @param queue 队列的名称
+func (b *Broker) ClosesQueue(topic, queue string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	chain, ok := b.brokerChain[topic]
+	if !ok {
+		return
+	}
+	// 先拿到channel
+	ch, ok := chain[queue]
+	if !ok {
+		return
+	}
+	delete(chain, queue)
+	close(ch)
+
+	if len(b.brokerChain[topic]) == 0 {
+		close(b.topicErrQueue[topic])
+	}
+}
+
 type Message struct {
 	// 订阅的主题
 	Topic string
+	// 订阅的队列
+	Queue string
 	// 消息的内容
 	Content any
+}
+
+type ErrMessage struct {
+	Message
+	// 错误的信息
+	Err error
 }
