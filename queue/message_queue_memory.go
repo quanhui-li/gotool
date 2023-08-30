@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	DefaultCapacity = 1000 // 默认容量
+	DefaultCapacity = 10 // 默认容量
 )
 
 type Broker struct {
@@ -31,8 +31,8 @@ func NewBroker() *Broker {
 
 // Send 发送消息
 func (b *Broker) Send(msg Message) error {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	chains, ok := b.brokerChain[msg.Topic]
 	if !ok {
 		return errors.New("topic不存在")
@@ -47,7 +47,7 @@ func (b *Broker) Send(msg Message) error {
 		}
 	}
 
-	chain, ok := b.brokerChain[msg.Topic]
+	chains, ok = b.brokerChain[msg.Topic]
 	if !ok {
 		b.topicErrQueue[msg.Topic] <- ErrMessage{
 			Message: msg,
@@ -55,26 +55,30 @@ func (b *Broker) Send(msg Message) error {
 		}
 	}
 
-	errQueue, ok := b.topicErrQueue[msg.Topic]
-	if !ok {
-		return errors.New("错误消息队列不存在")
-	}
-
-	for queue, ch := range chain {
-		if msg.Queue != "" && queue != msg.Queue {
+	var wg sync.WaitGroup
+	for ne, ch := range chains {
+		// TODO 处理重试的数据没有写入到指定队列中的问题
+		if msg.Queue != "" && ne != msg.Queue {
 			continue
 		}
-		select {
-		case ch <- msg:
-			return nil
-		default:
-			errQueue <- ErrMessage{
-				Message: msg,
-				Err:     errors.New("消息队列已满"),
+		name := ne
+		wg.Add(1)
+		go func(ch chan Message, name string) {
+			defer wg.Done()
+			select {
+			case ch <- msg:
+				return
+			default:
+				msg.Queue = name
+				b.topicErrQueue[msg.Topic] <- ErrMessage{
+					Message: msg,
+					Err:     errors.New("消息队列已满"),
+				}
 			}
-		}
+		}(ch, name)
 	}
 
+	wg.Wait()
 	return nil
 }
 

@@ -36,7 +36,9 @@ func TestQueue(t *testing.T) {
 	var wg sync.WaitGroup
 
 	go func() {
-		defer qu.Close(topic)
+		defer func() {
+			qu.Close(topic)
+		}()
 		for i := 0; i < 10000; i++ {
 			errQueue, ok := qu.ErrQueue(topic)
 			if !ok {
@@ -60,8 +62,12 @@ func TestQueue(t *testing.T) {
 				}
 				fmt.Println("错误消息: ", msg)
 				if msg.Err.Error() == "消息队列已满" {
-					//time.Sleep(1 * time.Millisecond)
+					fmt.Println("开始重试")
+					if err = qu.Send(msg.Message); err != nil {
+						t.Log(err)
+					}
 				}
+				time.Sleep(10 * time.Millisecond)
 			default:
 				// 空的 case 分支
 			}
