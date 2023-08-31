@@ -33,19 +33,13 @@ func TestQueue(t *testing.T) {
 		t.Log("订阅错误", err)
 		return
 	}
-	var wg sync.WaitGroup
 
 	go func() {
 		defer func() {
 			qu.Close(topic)
 		}()
-		for i := 0; i < 10000; i++ {
-			errQueue, ok := qu.ErrQueue(topic)
-			if !ok {
-				t.Log("错误消息队列不存在")
-				return
-			}
-			err := qu.Send(Message{
+		for i := 0; i < 100; i++ {
+			err = qu.Send(Message{
 				Topic:   topic,
 				Content: time.Now().String(),
 			})
@@ -53,27 +47,35 @@ func TestQueue(t *testing.T) {
 				t.Log("topic不存在")
 				return
 			}
-
-			select {
-			case msg, ok := <-errQueue:
-				if !ok {
-					t.Log("topic已取消订阅")
-					return
-				}
-				fmt.Println("错误消息: ", msg)
-				if msg.Err.Error() == "消息队列已满" {
-					fmt.Println("开始重试")
-					if err = qu.Send(msg.Message); err != nil {
-						t.Log(err)
-					}
-				}
-				time.Sleep(10 * time.Millisecond)
-			default:
-				// 空的 case 分支
-			}
 		}
 	}()
 
+	go func() {
+		errQueue, ok := qu.ErrQueue(topic)
+		if !ok {
+			t.Log("错误消息队列不存在")
+			return
+		}
+		select {
+		case msg, ok := <-errQueue:
+			if !ok {
+				t.Log("topic已取消订阅")
+				return
+			}
+			fmt.Println("错误消息: ", msg)
+			if msg.Err.Error() == "消息队列已满" {
+				fmt.Println("开始重试")
+				if err = qu.SendToSpecifyQueue(msg.Message); err != nil {
+					t.Log(err)
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+		default:
+			// 空的 case 分支
+		}
+	}()
+
+	var wg sync.WaitGroup
 	// 先订阅topic，三个goroutine
 	wg.Add(3)
 	for i := 0; i < 3; i++ {
@@ -89,7 +91,6 @@ func TestQueue(t *testing.T) {
 
 		go func(name string) {
 			defer wg.Done()
-
 			count := 0
 			defer func() {
 				t.Logf("%s接收到%d条消息", name, count)
@@ -102,9 +103,6 @@ func TestQueue(t *testing.T) {
 			}
 
 			for {
-				//if count >= 100 && name == ThirdCustomer {
-				//	qu.ClosesQueue(topic, ThirdCustomer)
-				//}
 				select {
 				case msg, ok := <-ch:
 					if !ok {

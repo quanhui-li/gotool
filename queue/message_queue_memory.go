@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	DefaultCapacity = 10 // 默认容量
+	DefaultCapacity = 90 // 默认容量
 )
 
 type Broker struct {
@@ -37,48 +37,71 @@ func (b *Broker) Send(msg Message) error {
 	if !ok {
 		return errors.New("topic不存在")
 	}
-	if msg.Queue != "" {
-		_, ok := chains[msg.Queue]
-		if !ok {
+
+	for ne, ch := range chains {
+		name := ne
+		select {
+		case ch <- msg:
+		default:
+			msg.Queue = name
 			b.topicErrQueue[msg.Topic] <- ErrMessage{
 				Message: msg,
-				Err:     errors.New("消息队列不存在"),
+				Err:     errors.New("消息队列已满"),
 			}
 		}
 	}
 
-	chains, ok = b.brokerChain[msg.Topic]
+	return nil
+}
+
+//// SendG 并发推送消息
+//func (b *Broker) SendG(msg Message) error {
+//	b.mu.Lock()
+//	defer b.mu.Unlock()
+//	chains, ok := b.brokerChain[msg.Topic]
+//	if !ok {
+//		return errors.New("topic不存在")
+//	}
+//
+//	var wg sync.WaitGroup
+//	for ne, ch := range chains {
+//		msg.Queue = ne
+//		wg.Add(1)
+//		go func(ch chan Message) {
+//			defer wg.Done()
+//			select {
+//			case ch <- msg:
+//			default:
+//				b.topicErrQueue[msg.Topic] <- ErrMessage{
+//					Message: msg,
+//					Err:     errors.New("消息队列已满"),
+//				}
+//			}
+//		}(ch)
+//	}
+//
+//	wg.Wait()
+//	return nil
+//}
+
+// SendToSpecifyQueue 发送消息到指定的队列
+func (b *Broker) SendToSpecifyQueue(msg Message) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	queue, ok := b.brokerChain[msg.Topic][msg.Queue]
 	if !ok {
+		return errors.New("队列不存在")
+	}
+
+	select {
+	case queue <- msg:
+	default:
 		b.topicErrQueue[msg.Topic] <- ErrMessage{
 			Message: msg,
-			Err:     errors.New("消息队列不存在"),
+			Err:     errors.New("消息队列已满"),
 		}
 	}
 
-	var wg sync.WaitGroup
-	for ne, ch := range chains {
-		// TODO 处理重试的数据没有写入到指定队列中的问题
-		if msg.Queue != "" && ne != msg.Queue {
-			continue
-		}
-		name := ne
-		wg.Add(1)
-		go func(ch chan Message, name string) {
-			defer wg.Done()
-			select {
-			case ch <- msg:
-				return
-			default:
-				msg.Queue = name
-				b.topicErrQueue[msg.Topic] <- ErrMessage{
-					Message: msg,
-					Err:     errors.New("消息队列已满"),
-				}
-			}
-		}(ch, name)
-	}
-
-	wg.Wait()
 	return nil
 }
 
