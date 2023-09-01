@@ -1,4 +1,4 @@
-package cache
+package local_cache
 
 import (
 	"context"

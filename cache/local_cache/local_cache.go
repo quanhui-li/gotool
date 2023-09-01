@@ -1,8 +1,9 @@
-package cache
+package local_cache
 
 import (
 	"context"
 	"errors"
+	"github.com/liquanhui-99/gotool/cache"
 	"sync"
 	"time"
 )
@@ -11,7 +12,7 @@ var (
 	ErrKeyNotFound = errors.New("key不存在")
 )
 
-var _ Cache = (*BuildInMapCache)(nil)
+var _ cache.Cache = (*BuildInMapCache)(nil)
 
 type BuildInMapCacheOptions func(*BuildInMapCache)
 
