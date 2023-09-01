@@ -77,17 +77,17 @@ func (m *BuildInMapCache) Set(ctx context.Context, key string, val any, expirati
 
 func (m *BuildInMapCache) Get(ctx context.Context, key string) (any, error) {
 	m.mu.RLock()
-	val, ok := m.data[key]
+	res, ok := m.data[key]
 	m.mu.RUnlock()
 	if !ok {
 		return nil, ErrKeyNotFound
 	}
 
 	t := time.Now()
-	if val.timeout(t) {
+	if res.timeout(t) {
 		m.mu.Lock()
-		defer m.mu.RUnlock()
-		res, ok := m.data[key]
+		defer m.mu.Unlock()
+		res, ok = m.data[key]
 		if !ok {
 			return nil, ErrKeyNotFound
 		}
@@ -95,9 +95,9 @@ func (m *BuildInMapCache) Get(ctx context.Context, key string) (any, error) {
 			delete(m.data, key)
 			return nil, ErrKeyNotFound
 		}
-		return res, nil
+		return res.val, nil
 	}
-	return val, nil
+	return res.val, nil
 }
 
 func (m *BuildInMapCache) Delete(ctx context.Context, key string) error {
