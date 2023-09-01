@@ -1,169 +1,127 @@
 package cache
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"time"
 )
 
-const (
-	maxDeleteCount = 1000
-)
-
 var (
-	ErrKeyNotExisted = errors.New("cache: key不存在")
+	ErrKeyNotFound = errors.New("key不存在")
 )
 
-type Options func(cache *BuildInCache)
+var _ Cache = (*BuildInMapCache)(nil)
 
-func BuildInCacheWithOnEvicted(fn func(string, any)) Options {
-	return func(cache *BuildInCache) {
-		cache.onEvicted = fn
-	}
-}
-
-type BuildInCache struct {
-	// data map结构缓存数据
-	data map[string]*Value
-	// 读写锁控制并发
-	sync.RWMutex
-	// 关闭goroutine
+// BuildInMapCache 本地内存缓存
+type BuildInMapCache struct {
+	// 存储的数据，key是缓存的键，val是值，any类型
+	data map[string]*value
+	// 加锁保护资源
+	mu sync.RWMutex
+	// 关闭goroutine的channel
 	close chan struct{}
-	// 防止重复关闭
-	sync.Once
-	// 注册回调方法处理上下文，可选
-	onEvicted func(key string, value any)
+	// 引入once防止重复关闭的问题
+	once sync.Once
 }
 
-func NewBuildInCache(capacity int, opts ...Options) *BuildInCache {
-	res := &BuildInCache{
-		data:      make(map[string]*Value, capacity),
-		close:     make(chan struct{}),
-		onEvicted: func(key string, value any) {},
+func NewBuildInMapCache(capacity int) *BuildInMapCache {
+	cache := &BuildInMapCache{
+		data:  make(map[string]*value, capacity),
+		close: make(chan struct{}),
 	}
 
-	for _, opt := range opts {
-		opt(res)
-	}
-
-	// 开启goroutine定时轮询一部分key，map的轮询是随机的，不需要考虑每次轮询都是固定数据的问题
+	// 设置goroutine定时轮询过期的缓存数据
+	ticker := time.NewTicker(10 * time.Second)
 	go func() {
-		ticker := time.NewTicker(10 * time.Second)
-		for {
+		for tk := range ticker.C {
 			select {
-			case t := <-ticker.C:
-				res.Lock()
+			case <-cache.close:
+				return
+			default:
+				cache.mu.Lock()
 				count := 0
-				for key, val := range res.data {
-					if count >= maxDeleteCount {
+				for key, val := range cache.data {
+					// 控制每次的轮询数量，防止轮询过多导致性能问题
+					if count > 1000 {
 						break
 					}
-					if val.deadlineBefore(t) {
-						res.delete(key)
+					if val.timeout(tk) {
+						delete(cache.data, key)
 					}
 					count++
 				}
-				res.Unlock()
-			case <-res.close:
-				return
+				cache.mu.Unlock()
 			}
 		}
 	}()
 
-	return res
+	return cache
 }
 
-// Set 设置key、value和过期时间
-func (b *BuildInCache) Set(key string, value any, expiration time.Duration) error {
-	b.Lock()
-	defer b.Unlock()
-	return b.set(key, value, expiration)
-
-	//// 通过time.AfterFunc设置过期
-	//if expiration > 0 {
-	//	time.AfterFunc(expiration, func() {
-	//		b.Lock()
-	//		defer b.Unlock()
-	//		val, ok := b.data[key]
-	//		now := time.Now()
-	//		if ok && !val.deadline.IsZero() && val.deadline.Before(now) {
-	//			delete(b.data, key)
-	//		}
-	//	})
-	//}
-}
-
-func (b *BuildInCache) set(key string, value any, expiration time.Duration) error {
+func (m *BuildInMapCache) Set(ctx context.Context, key string, val any, expiration time.Duration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	var dl time.Time
 	if expiration > 0 {
 		dl = time.Now().Add(expiration)
 	}
-	b.data[key] = &Value{
-		value:    value,
+
+	m.data[key] = &value{
+		val:      val,
 		deadline: dl,
 	}
+
 	return nil
 }
 
-// Get 根据key查询缓存的内容
-func (b *BuildInCache) Get(key string) (any, error) {
-	b.RLock()
-	val, ok := b.data[key]
-	b.RUnlock()
+func (m *BuildInMapCache) Get(ctx context.Context, key string) (any, error) {
+	m.mu.RLock()
+	val, ok := m.data[key]
+	m.mu.RUnlock()
 	if !ok {
-		return nil, ErrKeyNotExisted
+		return nil, ErrKeyNotFound
 	}
 
-	now := time.Now()
-	// 存在就需要判断是否过期，过期就删除，需要二次检验，防止并发修改问题，解决轮询漏掉过期key的问题
-	if val.deadlineBefore(now) {
-		b.Lock()
-		defer b.Unlock()
-		val, ok = b.data[key]
+	t := time.Now()
+	if val.timeout(t) {
+		m.mu.Lock()
+		defer m.mu.RUnlock()
+		res, ok := m.data[key]
 		if !ok {
-			return nil, ErrKeyNotExisted
+			return nil, ErrKeyNotFound
 		}
-		if val.deadlineBefore(now) {
-			b.delete(key)
+		if res.timeout(t) {
+			delete(m.data, key)
+			return nil, ErrKeyNotFound
 		}
+		return res, nil
 	}
-
-	return val.value, nil
+	return val, nil
 }
 
-func (b *BuildInCache) Close() error {
-	b.Once.Do(func() {
-		b.close <- struct{}{}
+func (m *BuildInMapCache) Delete(ctx context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.data, key)
+	return nil
+}
+
+func (m *BuildInMapCache) Close() error {
+	m.once.Do(func() {
+		m.close <- struct{}{}
+		close(m.close)
 	})
 	return nil
 }
 
-// Delete 删除key
-func (b *BuildInCache) Delete(key string) error {
-	b.Lock()
-	defer b.Unlock()
-	b.delete(key)
-	return nil
-}
-
-// delete 处理删除key和调用回调方法的程序
-func (b *BuildInCache) delete(key string) {
-	val, ok := b.data[key]
-	if !ok {
-		b.onEvicted(key, nil)
-		return
-	}
-	delete(b.data, key)
-	b.onEvicted(key, val.value)
-}
-
-type Value struct {
-	// value消息内容
-	value any
+type value struct {
+	// 存储的值
+	val any
 	// 过期时间
 	deadline time.Time
 }
 
-func (v *Value) deadlineBefore(t time.Time) bool {
+func (v value) timeout(t time.Time) bool {
 	return !v.deadline.IsZero() && v.deadline.Before(t)
 }
