@@ -12,6 +12,7 @@ type Cache interface {
 	Get(ctx context.Context, key string) (any, error)
 	// Delete 删除指定的缓存数据
 	Delete(ctx context.Context, key string) error
-	// Close 关闭缓存
-	Close() error
+
+	// LoadAndDelete 加载并删除数据
+	LoadAndDelete(ctx context.Context, key string) (any, error)
 }

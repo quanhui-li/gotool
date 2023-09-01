@@ -133,6 +133,19 @@ func (m *BuildInMapCache) delete(key string) error {
 	return nil
 }
 
+func (m *BuildInMapCache) LoadAndDelete(ctx context.Context, key string) (any, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	val, ok := m.data[key]
+	if !ok {
+		return nil, ErrKeyNotFound
+	}
+
+	_ = m.delete(key)
+
+	return val, nil
+}
+
 func (m *BuildInMapCache) Close() error {
 	m.once.Do(func() {
 		m.close <- struct{}{}

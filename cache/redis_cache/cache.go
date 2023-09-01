@@ -3,6 +3,7 @@ package redis_cache
 import (
 	"context"
 	"errors"
+	"github.com/liquanhui-99/gotool/cache"
 	"github.com/redis/go-redis/v9"
 	"time"
 )
@@ -10,6 +11,8 @@ import (
 var (
 	errFailedToSetCache = errors.New("写入redis失败")
 )
+
+var _ cache.Cache = (*RedisCache)(nil)
 
 type RedisCache struct {
 	client redis.Cmdable
@@ -43,6 +46,6 @@ func (r *RedisCache) Delete(ctx context.Context, key string) error {
 	return err
 }
 
-func (r *RedisCache) Close() error {
-	return nil
+func (r *RedisCache) LoadAndDelete(ctx context.Context, key string) (any, error) {
+	return r.client.GetDel(ctx, key).Result()
 }
