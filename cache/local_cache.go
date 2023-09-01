@@ -13,6 +13,8 @@ var (
 
 var _ Cache = (*BuildInMapCache)(nil)
 
+type BuildInMapCacheOptions func(*BuildInMapCache)
+
 // BuildInMapCache 本地内存缓存
 type BuildInMapCache struct {
 	// 存储的数据，key是缓存的键，val是值，any类型
@@ -23,12 +25,26 @@ type BuildInMapCache struct {
 	close chan struct{}
 	// 引入once防止重复关闭的问题
 	once sync.Once
+	// 注册CDC回调处理，数据变更后调用
+	onEvicted func(key string, val any)
 }
 
-func NewBuildInMapCache(capacity int) *BuildInMapCache {
+// BuildInMapCacheWithOnEvicted 添加回调函数
+func BuildInMapCacheWithOnEvicted(fn func(key string, val any)) BuildInMapCacheOptions {
+	return func(cache *BuildInMapCache) {
+		cache.onEvicted = fn
+	}
+}
+
+func NewBuildInMapCache(capacity int, opts ...BuildInMapCacheOptions) *BuildInMapCache {
 	cache := &BuildInMapCache{
-		data:  make(map[string]*value, capacity),
-		close: make(chan struct{}),
+		data:      make(map[string]*value, capacity),
+		close:     make(chan struct{}),
+		onEvicted: func(key string, val any) {},
+	}
+
+	for _, opt := range opts {
+		opt(cache)
 	}
 
 	// 设置goroutine定时轮询过期的缓存数据
@@ -47,7 +63,7 @@ func NewBuildInMapCache(capacity int) *BuildInMapCache {
 						break
 					}
 					if val.timeout(tk) {
-						delete(cache.data, key)
+						_ = cache.delete(key)
 					}
 					count++
 				}
@@ -92,8 +108,7 @@ func (m *BuildInMapCache) Get(ctx context.Context, key string) (any, error) {
 			return nil, ErrKeyNotFound
 		}
 		if res.timeout(t) {
-			delete(m.data, key)
-			return nil, ErrKeyNotFound
+			return nil, m.delete(key)
 		}
 		return res.val, nil
 	}
@@ -103,7 +118,17 @@ func (m *BuildInMapCache) Get(ctx context.Context, key string) (any, error) {
 func (m *BuildInMapCache) Delete(ctx context.Context, key string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.delete(key)
+}
+
+func (m *BuildInMapCache) delete(key string) error {
+	val, ok := m.data[key]
+	if !ok {
+		return ErrKeyNotFound
+	}
 	delete(m.data, key)
+	// 触发回调
+	m.onEvicted(key, val)
 	return nil
 }
 
