@@ -8,17 +8,27 @@ import (
 	"time"
 )
 
+type loadFuncType func(ctx context.Context, key string) (any, error)
+
 // ReadThroughCache 需要用户必须赋值loadFunc、expiration、logFunc，如果不赋值，会发生Panic
 type ReadThroughCache struct {
 	Cache
 	// 需要用户传入，用于从数据库加载数据
-	loadFunc func(ctx context.Context, key string) (any, error)
+	loadFunc loadFuncType
 	// 过期时间设置
 	expiration time.Duration
 	// 记录日志的方法
 	logFunc func(msg string)
 	// 引入singleFlight，合并多条相同的请求，减轻数据库压力
 	g *singleflight.Group
+}
+
+func NewReadThroughCache(logFunc func(string), loadFunc loadFuncType, expiration time.Duration) *ReadThroughCache {
+	return &ReadThroughCache{
+		loadFunc:   loadFunc,
+		logFunc:    logFunc,
+		expiration: expiration,
+	}
 }
 
 // SyncGet 缓存对外听过的获取数据方法
