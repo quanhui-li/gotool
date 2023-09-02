@@ -5,8 +5,10 @@ go 1.19
 require (
 	github.com/go-playground/assert/v2 v2.2.0
 	github.com/golang/mock v1.6.0
+	github.com/google/uuid v1.3.1
 	github.com/redis/go-redis/v9 v9.1.0
 	github.com/stretchr/testify v1.8.4
+	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c
 )
 
 require (
