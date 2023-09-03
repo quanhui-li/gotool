@@ -106,7 +106,7 @@ func TestRedisDistributedLock_Unlock(t *testing.T) {
 			name:    "unlock failed",
 			key:     "unlock failed",
 			val:     "32432467",
-			wantErr: ErrLockNotExist,
+			wantErr: ErrLockNotHold,
 			client: func(ctrl *gomock.Controller) redis.Cmdable {
 				cmd := mocks.NewMockCmdable(ctrl)
 
@@ -148,3 +148,85 @@ func TestRedisDistributedLock_Unlock(t *testing.T) {
 		})
 	}
 }
+
+func TestRedisDistributedLock_Refresh(t *testing.T) {
+	testCases := []struct {
+		name       string
+		key, val   string
+		wantErr    error
+		expiration time.Duration
+		client     func(ctrl *gomock.Controller) redis.Cmdable
+	}{
+		// 刷新超时
+		{
+			name:    "refresh DeadlineExceeded",
+			key:     "refresh DeadlineExceeded",
+			val:     "324324",
+			wantErr: context.DeadlineExceeded,
+			client: func(ctrl *gomock.Controller) redis.Cmdable {
+				cmd := mocks.NewMockCmdable(ctrl)
+
+				res := redis.NewCmd(context.Background())
+				res.SetErr(context.DeadlineExceeded)
+				cmd.EXPECT().Eval(context.Background(), refreshScript, []string{"refresh DeadlineExceeded"}, []any{"324324", float64(60)}).Return(res)
+
+				return cmd
+			},
+			expiration: time.Minute,
+		},
+		{
+			name:    "refresh failed",
+			key:     "refresh failed",
+			val:     "32432467",
+			wantErr: ErrLockNotHold,
+			client: func(ctrl *gomock.Controller) redis.Cmdable {
+				cmd := mocks.NewMockCmdable(ctrl)
+
+				res := redis.NewCmd(context.Background())
+				res.SetVal(int64(0))
+				cmd.EXPECT().Eval(context.Background(), refreshScript, []string{"refresh failed"},
+					[]any{"32432467", float64(60)}).Return(res)
+
+				return cmd
+			},
+			expiration: time.Minute,
+		},
+		{
+			name:    "refresh success",
+			key:     "refresh success",
+			val:     "32432467",
+			wantErr: nil,
+			client: func(ctrl *gomock.Controller) redis.Cmdable {
+				cmd := mocks.NewMockCmdable(ctrl)
+
+				res := redis.NewCmd(context.Background())
+				res.SetVal(int64(1))
+				cmd.EXPECT().Eval(context.Background(), refreshScript, []string{"refresh success"}, []any{"32432467", float64(60)}).Return(res)
+
+				return cmd
+			},
+			expiration: time.Minute,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+			lock := &Lock{
+				key:        tc.key,
+				val:        tc.val,
+				client:     tc.client(ctrl),
+				expiration: tc.expiration,
+			}
+			err := lock.Refresh(context.Background())
+			assert.Equal(t, err, tc.wantErr)
+		})
+	}
+}
+
+//func ExampleLock_Refresh() {
+//	var l Lock
+//	// output:
+//	// hello
+//}

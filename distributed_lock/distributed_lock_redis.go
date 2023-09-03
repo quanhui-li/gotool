@@ -12,11 +12,14 @@ import (
 
 var (
 	ErrFailedToRaceLock = errors.New("抢锁失败")
-	ErrLockNotExist     = errors.New("锁不存在，解锁失败")
+	ErrLockNotHold      = errors.New("你没有持有锁")
 )
 
 //go:embed lua/unlock.lua
 var unlockScript string
+
+//go:embed lua/refresh_lock.lua
+var refreshScript string
 
 // RedisDistributedLock 基于Redis实现的分布式锁
 type RedisDistributedLock struct {
@@ -42,9 +45,10 @@ func (l *RedisDistributedLock) TryLock(ctx context.Context, key string, expirati
 	}
 
 	return &Lock{
-		key:    key,
-		val:    val,
-		client: l.client,
+		key:        key,
+		val:        val,
+		client:     l.client,
+		expiration: expiration,
 	}, nil
 }
 
@@ -54,8 +58,24 @@ type Lock struct {
 	key string
 	// 锁的唯一标识，防止释放掉别人的锁
 	val string
+	// 过期时间，用于手动续约刷新过期时间
+	expiration time.Duration
 	// redis
 	client redis.Cmdable
+}
+
+// Refresh 手动给锁续约
+func (l Lock) Refresh(ctx context.Context) error {
+	res, err := l.client.Eval(ctx, refreshScript, []string{l.key}, l.val, l.expiration.Seconds()).Int64()
+	if err != nil {
+		return err
+	}
+
+	if res != 1 {
+		return ErrLockNotHold
+	}
+
+	return nil
 }
 
 // Unlock 解锁，因为TryLock返回的是*Lock，所以直接定义为Lock的方法
@@ -67,7 +87,7 @@ func (l Lock) Unlock(ctx context.Context) error {
 	}
 
 	if res != 1 {
-		return ErrLockNotExist
+		return ErrLockNotHold
 	}
 	return nil
 }
