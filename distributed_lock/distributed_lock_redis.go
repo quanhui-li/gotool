@@ -14,6 +14,7 @@ import (
 var (
 	ErrFailedToRaceLock = errors.New("抢锁失败")
 	ErrLockNotHold      = errors.New("你没有持有锁")
+	ErrOverMaxCount     = errors.New("超过重试次数")
 )
 
 //go:embed lua/unlock.lua
@@ -21,6 +22,9 @@ var unlockScript string
 
 //go:embed lua/refresh_lock.lua
 var refreshScript string
+
+//go:embed lua/lock.lua
+var lockScript string
 
 // RedisDistributedLock 基于Redis实现的分布式锁
 type RedisDistributedLock struct {
@@ -30,6 +34,49 @@ type RedisDistributedLock struct {
 func NewRedisDistributedLock(client redis.Cmdable) *RedisDistributedLock {
 	return &RedisDistributedLock{
 		client: client,
+	}
+}
+
+func (l *RedisDistributedLock) Lock(ctx context.Context, key string,
+	timeout, expiration time.Duration,
+	strategy RetryStrategy) (*Lock, error) {
+	var timer *time.Timer
+	val := uuid.New().String()
+	for {
+		c, cancel := context.WithTimeout(ctx, timeout)
+		res, err := l.client.Eval(c, lockScript, []string{key}, []any{val, expiration.Seconds()}).Result()
+		cancel()
+		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+
+		interval, ok := strategy.Next(err)
+		if !ok {
+			return nil, ErrOverMaxCount
+		}
+
+		if res == "OK" {
+			return &Lock{
+				key:        key,
+				val:        val,
+				client:     l.client,
+				expiration: expiration,
+			}, nil
+		}
+
+		if timer == nil {
+			timer = time.NewTimer(interval)
+		} else {
+			timer.Reset(interval)
+		}
+
+		select {
+		case <-timer.C:
+			// 进行下一轮重试
+		case <-ctx.Done():
+			// context超时
+			return nil, ctx.Err()
+		}
 	}
 }
 
@@ -50,8 +97,6 @@ func (l *RedisDistributedLock) TryLock(ctx context.Context, key string, expirati
 		val:        val,
 		client:     l.client,
 		expiration: expiration,
-		unlockCh:   make(chan struct{}, 1),
-		timeoutCh:  make(chan struct{}, 1),
 	}, nil
 }
 
@@ -74,7 +119,11 @@ type Lock struct {
 }
 
 // AutoRefresh 自动续约机制，timeout是每次调用redis的context超时时间，interval是每次续约的间隔时间
-func (l Lock) AutoRefresh(interval, timeout time.Duration) error {
+func (l *Lock) AutoRefresh(interval, timeout time.Duration) error {
+	l.timeoutCh = make(chan struct{}, 1)
+	l.unlockCh = make(chan struct{}, 1)
+	l.once = &sync.Once{}
+
 	defer close(l.timeoutCh)
 	ticker := time.NewTicker(interval)
 	for {
@@ -114,7 +163,7 @@ func (l Lock) AutoRefresh(interval, timeout time.Duration) error {
 }
 
 // Refresh 手动给锁续约
-func (l Lock) Refresh(ctx context.Context) error {
+func (l *Lock) Refresh(ctx context.Context) error {
 	res, err := l.client.Eval(ctx, refreshScript, []string{l.key}, l.val, l.expiration.Seconds()).Int64()
 	if err != nil {
 		return err
@@ -129,12 +178,16 @@ func (l Lock) Refresh(ctx context.Context) error {
 
 // Unlock 解锁，因为TryLock返回的是*Lock，所以直接定义为Lock的方法
 // 解锁过程涉及到并发问题，可以利用Redis单线程的特性使用脚本来完成解锁流程
-func (l Lock) Unlock(ctx context.Context) error {
+func (l *Lock) Unlock(ctx context.Context) error {
 	var unlockErr error
 	l.once.Do(func() {
 		defer func() {
-			l.unlockCh <- struct{}{}
-			close(l.unlockCh)
+			select {
+			case l.unlockCh <- struct{}{}:
+				close(l.unlockCh)
+			default:
+				// 没有人调用自动续约，不需要处理
+			}
 		}()
 
 		res, err := l.client.Eval(ctx, unlockScript, []string{l.key}, l.val).Int64()
