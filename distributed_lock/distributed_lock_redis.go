@@ -4,9 +4,10 @@ import (
 	"context"
 	_ "embed"
 	"errors"
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
-	"time"
 )
 
 var (
@@ -35,6 +36,7 @@ func (l *RedisDistributedLock) TryLock(ctx context.Context, key string, expirati
 	if err != nil {
 		return nil, err
 	}
+
 	if !ok {
 		return nil, ErrFailedToRaceLock
 	}

@@ -4,9 +4,8 @@
 --- DateTime: 2023/9/3 10:27
 ---
 -- 尝试获取redis中的数据，并比对值
-key = KEYS[1]
-if redis.call("GET", key) == ARGV[1] then
-    return redis.call("DEL", key)
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
 else
     return 0
 end
