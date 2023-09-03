@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -49,6 +50,8 @@ func (l *RedisDistributedLock) TryLock(ctx context.Context, key string, expirati
 		val:        val,
 		client:     l.client,
 		expiration: expiration,
+		unlockCh:   make(chan struct{}, 1),
+		timeoutCh:  make(chan struct{}, 1),
 	}, nil
 }
 
@@ -62,6 +65,52 @@ type Lock struct {
 	expiration time.Duration
 	// redis
 	client redis.Cmdable
+	// unlockCh 通知停止自动续约的channel
+	unlockCh chan struct{}
+	// timeoutCh context超时后通知重试的channel
+	timeoutCh chan struct{}
+	// once 防止多次释放锁
+	once *sync.Once
+}
+
+// AutoRefresh 自动续约机制，timeout是每次调用redis的context超时时间，interval是每次续约的间隔时间
+func (l Lock) AutoRefresh(interval, timeout time.Duration) error {
+	defer close(l.timeoutCh)
+	ticker := time.NewTicker(interval)
+	for {
+		select {
+		case <-ticker.C:
+			// 这里是正常的续约逻辑处理
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			err := l.Refresh(ctx)
+			cancel()
+			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) {
+					// 超时的业务员逻辑
+					l.timeoutCh <- struct{}{}
+					continue
+				} else {
+					return err
+				}
+			}
+		case <-l.timeoutCh:
+			// 这里是context超时后处理重试的逻辑
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			err := l.Refresh(ctx)
+			cancel()
+			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) {
+					// 超时的业务员逻辑
+					l.timeoutCh <- struct{}{}
+					continue
+				} else {
+					return err
+				}
+			}
+		case <-l.unlockCh:
+			return nil
+		}
+	}
 }
 
 // Refresh 手动给锁续约
@@ -81,13 +130,23 @@ func (l Lock) Refresh(ctx context.Context) error {
 // Unlock 解锁，因为TryLock返回的是*Lock，所以直接定义为Lock的方法
 // 解锁过程涉及到并发问题，可以利用Redis单线程的特性使用脚本来完成解锁流程
 func (l Lock) Unlock(ctx context.Context) error {
-	res, err := l.client.Eval(ctx, unlockScript, []string{l.key}, l.val).Int64()
-	if err != nil {
-		return err
-	}
+	var unlockErr error
+	l.once.Do(func() {
+		defer func() {
+			l.unlockCh <- struct{}{}
+			close(l.unlockCh)
+		}()
 
-	if res != 1 {
-		return ErrLockNotHold
-	}
-	return nil
+		res, err := l.client.Eval(ctx, unlockScript, []string{l.key}, l.val).Int64()
+		if err != nil {
+			unlockErr = err
+		}
+
+		if res != 1 {
+			unlockErr = ErrLockNotHold
+		}
+		return
+	})
+
+	return unlockErr
 }

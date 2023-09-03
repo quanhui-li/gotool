@@ -2,6 +2,8 @@ package distributed_lock
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"github.com/go-playground/assert/v2"
 	"github.com/golang/mock/gomock"
 	"github.com/liquanhui-99/gotool/cache/redis_cache/mocks"
@@ -225,8 +227,81 @@ func TestRedisDistributedLock_Refresh(t *testing.T) {
 	}
 }
 
-//func ExampleLock_Refresh() {
-//	var l Lock
-//	// output:
-//	// hello
-//}
+func ExampleLock_Refresh() {
+	var l Lock
+	errCh := make(chan error, 1)
+	closeCh := make(chan struct{}, 1)
+	timeoutCh := make(chan struct{}, 1)
+	ticker := time.NewTicker(5 * time.Second)
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				err := l.Refresh(ctx)
+				if err != nil {
+					if errors.Is(err, context.DeadlineExceeded) {
+						// 超时了，通知重试
+						timeoutCh <- struct{}{}
+						continue
+					} else {
+						errCh <- err
+					}
+				}
+
+				cancel()
+			case <-timeoutCh:
+				// 续约超时重试的逻辑，这里可以加上一些超时次数等更加精细化的控制
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				err := l.Refresh(ctx)
+				if err != nil {
+					if errors.Is(err, context.DeadlineExceeded) {
+						// 超时了，通知重试
+						timeoutCh <- struct{}{}
+						continue
+					} else {
+						errCh <- err
+					}
+				}
+				cancel()
+			case <-closeCh:
+				// 业务代码通知关闭续约程序
+				close(errCh)
+				close(closeCh)
+				break
+			}
+		}
+	}()
+
+	// 业务逻辑代码
+	// 第一部分代码
+	select {
+	case <-errCh:
+	// 处理错误的逻辑
+	default:
+		// 业务逻辑的部分
+	}
+
+	// 第二部分代码
+	select {
+	case <-errCh:
+	// 处理错误的逻辑
+	default:
+		// 业务逻辑的部分
+	}
+
+	// 第三部分代码
+	select {
+	case <-errCh:
+	// 处理错误的逻辑
+	default:
+		// 业务逻辑的部分
+	}
+
+	// ... 每一个部分都需要去监控续约是否有超时错误发生
+	// 业务结束，通知停止自动续约
+	closeCh <- struct{}{}
+	fmt.Println("hello")
+	// output:
+	// hello
+}
