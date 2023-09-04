@@ -22,7 +22,7 @@ func TestConn(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 100000; i++ {
 		if err = client.Send("hello"); err != nil {
 			panic(err)
 		}
@@ -49,6 +49,6 @@ func TestConn(t *testing.T) {
 			fmt.Println(er)
 			continue
 		}
-		fmt.Println(string(msg))
+		fmt.Println(msg)
 	}
 }

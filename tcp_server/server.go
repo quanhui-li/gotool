@@ -44,6 +44,10 @@ func (s Server) Start() error {
 }
 
 func (s Server) handleConn(conn net.Conn) error {
+	errCh := make(chan error)
+	defer func() {
+		close(errCh)
+	}()
 	for {
 		// 读数据
 		bs := make([]byte, numberOfMessageLength)
@@ -68,19 +72,28 @@ func (s Server) handleConn(conn net.Conn) error {
 		}
 
 		// 处理和发送数据
-		data := s.handleData(msgBs)
-		newBs := make([]byte, numberOfMessageLength+len(data))
-		binary.BigEndian.PutUint64(newBs[:numberOfMessageLength], uint64(len(data)))
-		copy(newBs[numberOfMessageLength:], data)
-		_, err = conn.Write(newBs)
-		if errors.Is(err, net.ErrClosed) || err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
-			return err
+		go func() {
+			data := s.handleData(msgBs)
+			newBs := make([]byte, numberOfMessageLength+len(data))
+			binary.BigEndian.PutUint64(newBs[:numberOfMessageLength], uint64(len(data)))
+			copy(newBs[numberOfMessageLength:], data)
+			_, err = conn.Write(newBs)
+			if errors.Is(err, net.ErrClosed) || err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
+				errCh <- err
+			}
+			if err != nil {
+				fmt.Println(err)
+			}
+		}()
+		select {
+		case err = <-errCh:
+			if errors.Is(err, net.ErrClosed) || err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
+				return err
+			}
+		default:
+			// 默认进入下一轮
 		}
 
-		if err != nil {
-			fmt.Println(err)
-			continue
-		}
 	}
 }
 
