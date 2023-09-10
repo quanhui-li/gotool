@@ -115,14 +115,14 @@ type Lock struct {
 	// timeoutCh context超时后通知重试的channel
 	timeoutCh chan struct{}
 	// once 防止多次释放锁
-	once *sync.Once
+	once sync.Once
 }
 
 // AutoRefresh 自动续约机制，timeout是每次调用redis的context超时时间，interval是每次续约的间隔时间
 func (l *Lock) AutoRefresh(interval, timeout time.Duration) error {
 	l.timeoutCh = make(chan struct{}, 1)
 	l.unlockCh = make(chan struct{}, 1)
-	l.once = &sync.Once{}
+	l.once = sync.Once{}
 
 	defer close(l.timeoutCh)
 	ticker := time.NewTicker(interval)

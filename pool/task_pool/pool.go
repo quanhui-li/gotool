@@ -1,4 +1,4 @@
-package pool
+package task_pool
 
 import "context"
 
