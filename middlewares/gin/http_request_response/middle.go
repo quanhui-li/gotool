@@ -1,9 +1,13 @@
 package http_request_response
 
 import (
+	"bytes"
 	"context"
 	"github.com/gin-gonic/gin"
+	"io"
+	"io/ioutil"
 	"sync/atomic"
+	"time"
 )
 
 type LogFunc func(context.Context, *AccessLog)
@@ -68,8 +72,68 @@ func (r *HTTPRequestResponse) AllowStartAndEndTime(allow bool) *HTTPRequestRespo
 
 func (r *HTTPRequestResponse) Build() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		t := time.Now()
+		l := r.maxUrl.Load()
+		if uint32(len(c.Request.URL.Path)) >= l {
+			c.Request.URL.Path = c.Request.URL.Path[:l]
+		}
 
+		al := &AccessLog{
+			method: c.Request.Method,
+			url:    c.Request.URL.Path,
+		}
+
+		if r.allowReq.Load() && c.Request.Body != nil {
+			body, _ := ioutil.ReadAll(c.Request.Body)
+			c.Request.Body = io.NopCloser(bytes.NewReader(body))
+			rql := r.reqLen.Load()
+			if uint32(len(body)) >= rql {
+				body = body[:rql]
+			}
+			al.reqBody = string(body)
+		}
+
+		if r.allowSource.Load() {
+			al.source = c.Request.RemoteAddr
+		}
+
+		if r.allowStartAndEndTime.Load() {
+			al.startTime = t.String()
+			al.endTime = time.Now().String()
+		}
+
+		c.Writer = &ResponseWriter{
+			al:             al,
+			ResponseWriter: c.Writer,
+		}
+
+		defer func() {
+			al.duration = time.Since(t).String()
+			r.l(c, al)
+		}()
+
+		c.Next()
 	}
+}
+
+type ResponseWriter struct {
+	al *AccessLog
+	gin.ResponseWriter
+}
+
+func (w *ResponseWriter) Write(body []byte) (int, error) {
+	w.al.respBody = string(body)
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *ResponseWriter) WriteString(body string) (int, error) {
+	w.al.respBody = body
+	return w.ResponseWriter.WriteString(body)
+}
+
+func (w *ResponseWriter) WriteHeader(statusCode int) {
+	w.al.status = statusCode
+	w.ResponseWriter.WriteHeader(statusCode)
 }
 
 type AccessLog struct {
@@ -81,8 +145,10 @@ type AccessLog struct {
 	reqBody string
 	// 响应体
 	respBody string
+	// 请求来源IP
+	source string
 	// 状态码
-	status string
+	status int
 	// 开始时间
 	startTime string
 	// 结束时间
