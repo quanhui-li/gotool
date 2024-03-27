@@ -74,13 +74,14 @@ func (r *HTTPRequestResponse) Build() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		t := time.Now()
 		l := r.maxUrl.Load()
-		if uint32(len(c.Request.URL.Path)) >= l {
-			c.Request.URL.Path = c.Request.URL.Path[:l]
+		url := c.Request.URL.Path
+		if uint32(len(url)) >= l {
+			url = url[:l]
 		}
 
 		al := &AccessLog{
 			method: c.Request.Method,
-			url:    c.Request.URL.Path,
+			url:    url,
 		}
 
 		if r.allowReq.Load() && c.Request.Body != nil {
